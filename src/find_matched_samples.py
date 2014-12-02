@@ -59,7 +59,7 @@ FastqRecord = namedtuple('FastqRecord', [
 
 # get all rampage experiments
 def find_rampage_biosamples():
-    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=RAMPAGE&status=released&files.file_format=bam&frame=embedded"
+    URL = "https://www.encodeproject.org/search/?type=experiment&assay_term_name=RAMPAGE&status=released&frame=embedded"
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
     biosamples = set()
@@ -73,9 +73,18 @@ def find_fastqs_from_biosample(bsid):
     URL = "https://www.encodeproject.org/search/?searchTerm={}&type=experiment&frame=embedded".format(bsid)
     response = requests.get(URL, headers={'accept': 'application/json'})
     response_json_dict = response.json()
-    for experiment in response_json_dict['@graph']:
+    for experiment in response_json_dict['@graph']:        
+        libraries = {}
+        for rep in experiment['replicates']:
+            libraries[rep['library']['accession']] = (
+                rep['library']['biosample']['accession'],
+                rep['library']['depleted_in_term_name'])
+
         for file_rec in experiment['files']:
+            library_id = file_rec['replicate']['library'].split("/")[-2]
             # skiup files that aren't fastqs
+            print libraries[library_id]
+            continue
             file_type = file_rec['file_format']
             if file_type != 'fastq': continue# not in ('fastq', 'bam'): continue
             # skip replicates that aren't paired
@@ -342,8 +351,9 @@ def build_merged_fnames(idr_fnames):
 
 def main():
     # load the sql lite db
-    db = SamplesDB('samples.db', False)
-    #populate_db(db)
+    db = SamplesDB('samples_new.db', False)
+    add_fastqs_to_db(db)
+    return
     #add_bams_to_db(db, download_and_map(db))
     peak_fnames = call_peaks(db)
     idr_fnames = run_idr(peak_fnames)
