@@ -30,9 +30,22 @@ RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
      --outSAMunmapped Within --outFilterType BySJout                           \
      --outSAMattributes NH HI AS NM MD                                         \
      --outWigType bedGraph --outWigStrand Stranded                             \
-     --limitBAMsortRAM 30000000000                                             \
-     --outSAMtype BAM SortedByCoordinate
+     --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 30000000000
 """ % (STAR_CMD, INDEX_DIR))
+
+RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
+%s   --genomeDir %s \
+     --readFilesIn {read_fnames}                               \
+     --readFilesCommand zcat --runThreadN 8 --genomeLoad LoadAndKeep          \
+     --outFilterMultimapNmax 20 --alignSJoverhangMin 8 --alignSJDBoverhangMin 1\
+     --outFilterMismatchNmax 999 --outFilterMismatchNoverLmax 0.04             \
+     --alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000   \
+     --outSAMheaderCommentFile COfile.txt                                      \
+     --outSAMheaderHD @HD VN:1.4 SO:coordinate                                 \
+     --outSAMunmapped Within --outFilterType BySJout                           \
+     --outSAMattributes NH HI AS NM MD                                         \
+     --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 60000000000
+""" % (STAR_CMD, INDEX_DIR)) # SortedByCoordinate --limitBAMsortRAM 30000000000
 
 RAMPAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --genomeDir %s
@@ -51,17 +64,17 @@ RAMPAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
       --alignSJoverhangMin 8 
       --alignSJDBoverhangMin 1 
       --readFilesCommand zcat 
-      --outSAMtype BAM SortedByCoordinate 
+      --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 60000000000
       --outFilterScoreMinOverLread 0.85 
       --outFilterIntronMotifs RemoveNoncanonicalUnannotated 
       --clip5pNbases 6 15 
-      --seedSearchStartLmax 30 
-      --limitBAMsortRAM 30000000000""" %  (STAR_CMD, INDEX_DIR))
+      --seedSearchStartLmax 30 """ %  (STAR_CMD, INDEX_DIR))
+# --limitBAMsortRAM 10000000000
 
 CAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --genomeDir %s
       --readFilesIn {read_fnames}
-      --runThreadN 8 
+      --runThreadN 8
       --genomeLoad LoadAndKeep          
       --outSAMunmapped Within 
       --outFilterType BySJout 
@@ -80,20 +93,20 @@ CAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
       --outFilterIntronMotifs RemoveNoncanonicalUnannotated 
       --clip5pNbases 6 15 
       --seedSearchStartLmax 30 
-      --limitBAMsortRAM 30000000000""" % (STAR_CMD, INDEX_DIR))
+      --limitBAMsortRAM 60000000000""" % (STAR_CMD, INDEX_DIR))
 
 MARK_PCR_DUP_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --inputBAMfile {bam_fname}
-      --runThreadN 8 
+      --runThreadN 8
       --bamRemoveDuplicatesType UniqueIdentical 
       --runMode inputAlignmentsFromBAM 
       --bamRemoveDuplicatesMate2basesN 15 
       --outFileNamePrefix {op_prefix} 
-      --limitBAMsortRAM 30000000000
+      --limitBAMsortRAM 60000000000
 """ %  STAR_CMD)
 
 GRIT_CMD_TEMPLATE = re.sub("\s+", " ", """
-python ~/grit/bin/call_peaks.py 
+call_peaks.py \
     --rnaseq-reads {RNAseq_reads} --rnaseq-read-type auto
     --rampage-reads {rampage_reads} --rampage-read-type auto
     --reference %s
@@ -205,13 +218,16 @@ def build_mapping_cmd(key, fastqs):
         STAR_CMD_TEMPLATE = CAGE_STAR_CMD_TEMPLATE
     else: 
         assert False
-    
+
+    #if os.path.exists(of_prefix): return None, None
+
     # first make a directory to do everything in, and then downlaod the files
-    cmds.append("mkdir {ofname} && cd {ofname}".format(ofname=of_prefix))
+    #cmds.append("mkdir {ofname} && cd {ofname}".format(ofname=of_prefix))
+    cmds.append("cd {ofname}".format(ofname=of_prefix))
     # now download all of the files, in parallel
     
-    for url in chain(*fastqs):
-        cmds.append("wget -q {base}{url}".format(base=BASE_URL, url=url))
+    #for url in chain(*fastqs):
+    #    cmds.append("wget -q {base}{url}".format(base=BASE_URL, url=url))
     # now build the mapping command
     # add the star command, stripping hte raw fname from the full url
     cmds.append( STAR_CMD_TEMPLATE.format(
@@ -225,7 +241,7 @@ def build_mapping_cmd(key, fastqs):
         # rampage goes through the PCR duplicate filtering step, so
         # after it finishes remove the old bam, and change the intial
         # bam filename to the merged name
-        cmds.append("rm {}".format(initial_bam_fname))
+        #cmds.append("rm {}".format(initial_bam_fname))
         initial_bam_fname = bam_fname_prefix + "Processed.out.bam"
 
     cmds.append("mv {} {}.bam".format(initial_bam_fname, bam_fname_prefix))
@@ -255,6 +271,7 @@ def run_in_parallel(cmds_queue, NPROC):
         # and exit
         pid = os.fork()
         if pid != 0:
+            print "FORKED"
             continue
         else:
             print(cmds)
@@ -298,17 +315,22 @@ def call_peaks_for_experiment(experiment_id):
         exp_id = find_matching_rnaseq_experiments(*rampage_key[1:])
         if exp_id == None: continue
         
-        bam_fnames[rampage_key] = bam_fname
-        mapping_cmds.append( cmd )
+        if bam_fname != None:
+            bam_fnames[rampage_key] = bam_fname
+        if cmd != None:
+            mapping_cmds.append( cmd )
         
         for rnaseq_key, rnaseq_fnames in find_fastqs(
                 exp_id, is_paired=True).items():
             if rampage_key[1:] != rnaseq_key[1:]: continue
             bam_fname, cmd = build_mapping_cmd(rnaseq_key, rnaseq_fnames)
-            bam_fnames[rnaseq_key] = bam_fname
-            mapping_cmds.append( cmd )
-    run_in_parallel( mapping_cmds, 4 )
-    
+            if bam_fname != None:
+                bam_fnames[rnaseq_key] = bam_fname
+            if cmd != None:
+                mapping_cmds.append( cmd )
+    return mapping_cmds
+    #run_in_parallel( mapping_cmds, 16 )
+    return
     # call peaks in the matched smaples
     matched_bams = defaultdict(lambda: {})
     for key, fname in bam_fnames.items():
@@ -324,8 +346,10 @@ def call_peaks_for_experiment(experiment_id):
             ofname=ofname)
         peak_calling_cmds.append( GRIT_CMD )
         called_peak_fnames[key] = ofname
-    
-    run_in_parallel( peak_calling_cmds, 2 )
+ 
+    #for cmd in peak_calling_cmds:
+    #    print cmd
+    #run_in_parallel( peak_calling_cmds, 2 )
     """
     # run idr 
     assert len(called_peak_fnames) == 2
@@ -354,6 +378,9 @@ def find_rampage_experiments():
 
 
 if __name__ == '__main__':
+    mapping_cmds = []
     for exp_id in sorted(set(find_rampage_experiments())):
-        call_peaks_for_experiment( exp_id )
+        print exp_id
+        mapping_cmds.extend( call_peaks_for_experiment( exp_id ) )
+    run_in_parallel( mapping_cmds, 8 )
     #call_peaks_for_experiment( sys.argv[1] )

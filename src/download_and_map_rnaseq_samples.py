@@ -328,8 +328,8 @@ def find_rnaseq_fastqs_and_bams():
         print fastqs
         print "bams"
         print find_bams(exp_id )
-    
-if __name__ == '__main__':
+
+def build_tf_list():
     with open("mouse_tfs.txt", "w") as ofp:
         chipseq_exps = list(find_chipseq_experiments())
         for i, exp_id in enumerate(chipseq_exps):
@@ -348,6 +348,8 @@ if __name__ == '__main__':
                     (exp_id, target, sample_type, 
                      BASE_URL[:-2]+file_loc, 
                      human_readable_ofname))
-
-                
-    #call_peaks_for_experiment( sys.argv[1] )
+    
+    return
+    
+if __name__ == '__main__':
+    call_peaks_for_experiment( sys.argv[1] )
