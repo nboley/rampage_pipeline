@@ -6,11 +6,23 @@ import re
 
 import numpy
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 import pysam
 
 sys.path.insert(0, "/users/nboley/src/TF_binding/")
 #from motif_tools import Motif, iter_motifs
 from load_motifs import load_motifs 
+
+USE_START = False
+USE_MAX = True
+USE_WEIGHTED_AVERAGE = False
+
+VERBOSE = False
+QUIET = False
+FIX_CHRM_NAMES_FOR_UCSC = False
 
 motif_names = """
 TATA
@@ -21,17 +33,32 @@ GTF2A
 """.strip().split()
 promoter_factors = set(x.upper() for x in motif_names)
 
-TSSLoc = namedtuple('TSS', ['chrm', 'strand', 'start', 'stop'])
-TSS = namedtuple('TSS', ['loc', 'cnt', 'tpm', 'density'])
-
-VERBOSE = False
-QUIET = False
-FIX_CHRM_NAMES_FOR_UCSC = False
+try: 
+    rev_comp_table = str.maketrans("ACGT", "TGCA")
+except:
+    import string
+    rev_comp_table = string.maketrans("ACGT", "TGCA")
 
 def log(msg, level=None):
     if QUIET: return
     if level == None or (level == 'VERBOSE' and VERBOSE):
         print >> sys.stderr, msg
+
+TSSLoc = namedtuple('TSS', ['chrm', 'strand', 'start', 'stop'])
+TSSData = namedtuple('TSS', ['loc', 'cnt', 'tpm', 'density'])
+class TSS(TSSData):
+    def get_sequence(self, fasta, flank_size=0):
+        region = (self.loc.chrm, 
+                  self.loc.start-flank_size, 
+                  self.loc.stop+flank_size)
+        seq = str(fasta.fetch(*region).upper())
+        if self.loc.strand == '-':
+            return seq.translate(rev_comp_table)[::-1] 
+        else:
+            return seq
+    
+    def __len__(self):
+        return self.loc.stop - self.loc.start
 
 def load_TSSs(fp):
     raw_tss_s = []
@@ -98,39 +125,61 @@ def parse_arguments():
     
     return ( args.fasta, args.motifs, args.TSSs)
 
+def build_plot_for_factor(tss_s, motif, fasta, flank_length):
+    fasta = pysam.Fastafile(fasta.filename)
+    agg_score = numpy.zeros(flank_length*2-len(motif), dtype=float)
+    for tss_i, tss in enumerate(tss_s):
+        if tss_i%1000 == 0: print motif.name, tss_i, "/", len(tss_s)
+        try: seq = tss.get_sequence(fasta, flank_length)
+        except IndexError: continue
+        if seq == '': continue
+        scores = numpy.array([
+            score for pos, score in motif.iter_pwm_score(seq)])
+        if USE_WEIGHTED_AVERAGE:
+            for offset, pos_cnt in zip(xrange(len(tss)), tss.density):
+                agg_score[:] += (float(pos_cnt)/tss.cnt
+                             )*scores[offset:offset+2*flank_length-len(motif)]
+        elif USE_MAX:
+            offset = numpy.argmax(tss.density)
+            agg_score[:] += scores[offset:offset+2*flank_length-len(motif)]
+        elif USE_START:
+            offset = 0
+            agg_score[:] += scores[offset:offset+2*flank_length-len(motif)]
+        else:
+            assert False
+        #print (scores.sum()/len(motif))/len(scores), len(scores)-len(tss)+len(motif)
+        #print seq
+    
+    plt.plot(len(agg_score)*agg_score/agg_score.sum())
+    plt.savefig(motif.name + ".png")
+    return
+
 def main():
     fasta, motifs_fp, tss_s_fp,  = parse_arguments()
-
-    tss_s = load_TSSs(tss_s_fp)
-    #for tss in tss_s:
-    #    print tss
 
     motifs = []
     for factor, factor_motifs in load_motifs(
             motifs_fp.name, promoter_factors).iteritems():
         motifs.append(factor_motifs[0])
 
-    return
-    """
-    for i, tss in enumerate(tss_s):
-        if i > 0 and i%1000 == 0: 
-            print("Finished {}/{}".format(i, len(tss_s)) )
-        seq = tss.get_flanking_seq(fasta)
-        for motif, hits in matches.items():
-            for hit in hits:
-                rv[motif][hit] += 1./len(hits)
+    tss_s = load_TSSs(tss_s_fp)
 
-    for motif, cnts in rv.items():
-        with open("Frac.{}.txt".format(motif), "w") as ofp:
-            for cnt in cnts:
-                print >> ofp, "{:e}".format(float(cnt)/len(cnts))
-    """
-    # load the peaks list
+    # the amount of flanking sequence we will grab, on each side 
+    flank_length = 50
+    pids = []
+    for motif in motifs:
+        pid = os.fork()
+        #pid = 0
+        if pid == 0:
+            build_plot_for_factor(tss_s, motif, fasta, flank_length)
+            os._exit(0)
+        else:
+            pids.append(pid)
     
-    # load the fasta file
-    
-    # load the bam(s)
-    pass
+    for pid in pids:
+        os.waitpid(pid, 0)
+
+    return
 
 if __name__ == '__main__':
     main()
