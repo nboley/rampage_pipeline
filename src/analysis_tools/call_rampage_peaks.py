@@ -11,6 +11,8 @@ import re
 
 from multiprocessing import Value
 
+NTHREADS = 32
+
 MATCH_LAB = True
 
 INDEX_DIR = "/srv/scratch/nboley/RAMPAGE_human/STAR_indexes/STAR_2.4.1b.GRCh38_PhiX_ERCCv2/"
@@ -21,7 +23,7 @@ BASE_URL = "https://www.encodeproject.org/"
 RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s   --genomeDir %s \
      --readFilesIn {read_fnames}                               \
-     --readFilesCommand zcat --runThreadN 24 --genomeLoad LoadAndKeep          \
+     --readFilesCommand zcat --runThreadN %i --genomeLoad LoadAndKeep          \
      --outFilterMultimapNmax 20 --alignSJoverhangMin 8 --alignSJDBoverhangMin 1\
      --outFilterMismatchNmax 999 --outFilterMismatchNoverLmax 0.04             \
      --alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000   \
@@ -31,12 +33,12 @@ RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
      --outSAMattributes NH HI AS NM MD                                         \
      --outWigType bedGraph --outWigStrand Stranded                             \
      --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 30000000000
-""" % (STAR_CMD, INDEX_DIR))
+""" % (STAR_CMD, INDEX_DIR, NTHREADS))
 
 RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s   --genomeDir %s \
      --readFilesIn {read_fnames}                               \
-     --readFilesCommand zcat --runThreadN 24 --genomeLoad LoadAndKeep          \
+     --readFilesCommand zcat --runThreadN %i --genomeLoad LoadAndKeep          \
      --outFilterMultimapNmax 20 --alignSJoverhangMin 8 --alignSJDBoverhangMin 1\
      --outFilterMismatchNmax 999 --outFilterMismatchNoverLmax 0.04             \
      --alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000   \
@@ -45,12 +47,12 @@ RNASEQ_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
      --outSAMunmapped Within --outFilterType BySJout                           \
      --outSAMattributes NH HI AS NM MD                                         \
      --outSAMtype BAM SortedByCoordinate --limitBAMsortRAM 60000000000
-""" % (STAR_CMD, INDEX_DIR)) # SortedByCoordinate --limitBAMsortRAM 30000000000
+""" % (STAR_CMD, INDEX_DIR, NTHREADS)) # SortedByCoordinate --limitBAMsortRAM 30000000000
 
 RAMPAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --genomeDir %s
       --readFilesIn {read_fnames}
-      --runThreadN 24 
+      --runThreadN %i
       --genomeLoad LoadAndKeep          
       --outSAMunmapped Within 
       --outFilterType BySJout 
@@ -68,13 +70,13 @@ RAMPAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
       --outFilterScoreMinOverLread 0.85 
       --outFilterIntronMotifs RemoveNoncanonicalUnannotated 
       --clip5pNbases 6 15 
-      --seedSearchStartLmax 30 """ %  (STAR_CMD, INDEX_DIR))
+      --seedSearchStartLmax 30 """ %  (STAR_CMD, INDEX_DIR, NTHREADS))
 # --limitBAMsortRAM 10000000000
 
 CAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --genomeDir %s
       --readFilesIn {read_fnames}
-      --runThreadN 24
+      --runThreadN %i
       --genomeLoad LoadAndKeep          
       --outSAMunmapped Within 
       --outFilterType BySJout 
@@ -93,7 +95,7 @@ CAGE_STAR_CMD_TEMPLATE = re.sub("\s+", " ", """
       --outFilterIntronMotifs RemoveNoncanonicalUnannotated 
       --clip5pNbases 6 15 
       --seedSearchStartLmax 30 
-      --limitBAMsortRAM 60000000000""" % (STAR_CMD, INDEX_DIR))
+      --limitBAMsortRAM 60000000000""" % (STAR_CMD, INDEX_DIR, NTHREADS))
 
 MARK_PCR_DUP_CMD_TEMPLATE = re.sub("\s+", " ", """
 %s    --inputBAMfile {bam_fname}
@@ -106,15 +108,17 @@ MARK_PCR_DUP_CMD_TEMPLATE = re.sub("\s+", " ", """
 """ %  STAR_CMD)
 
 GRIT_CMD_TEMPLATE = re.sub("\s+", " ", """
-call_peaks.py \
+call_peaks \
     --rnaseq-reads {RNAseq_reads} --rnaseq-read-type auto
     --rampage-reads {rampage_reads} --rampage-read-type auto
     --reference %s
-    --threads 24  
+    --threads %i  
     --exp-filter-fraction 0.10
     --trim-fraction 0.05
     --ucsc --outfname {ofname}
-""" % ANNOTATION_GTF)
+    --bed-peaks-ofname {bed_ofname}
+    --annotation-quantifications-ofname {ann_quant_ofname}
+""" % (ANNOTATION_GTF, NTHREADS*2))
 
 IDR_CMD_TEMPLATE = re.sub("\s+", " ", """
 python3 ~/src/idr/python/idr.py 
@@ -338,25 +342,31 @@ def call_peaks_for_experiment(experiment_id):
                 bam_fnames[rampage_key] = rampage_bam_fname
                 mapping_cmds.append( rampage_cmd )
 
-    return mapping_cmds
-    #run_in_parallel( mapping_cmds, 16 )
+    if len(mapping_cmds) == 0:
+        return mapping_cmds
+    
+    #return mapping_cmds
+    run_in_parallel( mapping_cmds, 2 )
     # call peaks in the matched smaples
     matched_bams = defaultdict(lambda: {})
     for key, fname in bam_fnames.items():
         matched_bams[key[1:]][key[0]] = fname
-
     peak_calling_cmds = []
     called_peak_fnames = {}
     for key, fnames in matched_bams.items():
-        ofname = "RAMPAGE_peaks_{}.narrowPeak".format(
+        ofname = "RAMPAGE_peaks_{}".format(
             "_".join(key).replace(">", "GT").replace(" ", ""))
         GRIT_CMD = GRIT_CMD_TEMPLATE.format(
             RNAseq_reads=fnames['RNA-seq'],
             rampage_reads=fnames['RAMPAGE'],
-            ofname=ofname)
+            ofname=ofname+".narrowPeak",
+            bed_ofname=ofname+".bed",
+            ann_quant_ofname=ofname+".annquant.bed")
         peak_calling_cmds.append( GRIT_CMD )
         called_peak_fnames[key] = ofname
- 
+    run_in_parallel( peak_calling_cmds, 2)
+    assert False
+    return []
     #for cmd in peak_calling_cmds:
     #    print cmd
     #run_in_parallel( peak_calling_cmds, 2 )
@@ -393,17 +403,16 @@ def find_rampage_experiments():
         yield experiment['@id'].split("/")[-2]
     return 
 
-
-if __name__ == '__main__':
+def main():
+    exp_id = sys.argv[1]
+    os.mkdir(exp_id)
+    os.chdir(exp_id)
+    call_peaks_for_experiment( exp_id )
+    return
     finished_rampage_experiments = find_finished_rampage_experiments()
-    mapping_cmds = []
     for exp_id in sorted(set(find_rampage_experiments())):
         if exp_id in finished_rampage_experiments: continue
-        res = call_peaks_for_experiment( exp_id )
-        if len(res) == 0: continue
-        print exp_id, len(res)
-        print res[1]
-        break
-        #mapping_cmds.extend( call_peaks_for_experiment( exp_id ) )
-    #run_in_parallel( mapping_cmds, 8 )
-    #call_peaks_for_experiment( sys.argv[1] )
+        print exp_id
+
+if __name__ == '__main__':
+    main()
