@@ -1,6 +1,8 @@
 import os, sys
 import cPickle as pickle
 from collections import defaultdict
+import re
+import urllib
 
 import numpy
 
@@ -27,6 +29,10 @@ def load_idr_peaks(path=PEAKS_PATH):
     peaks = defaultdict(list)
     for i, fname in enumerate(os.listdir(path)):
         if not fname.endswith("_idr.bed"): continue
+        experiment = fname.split("_")[0]
+        assay = get_assay_name(experiment)
+        print >> sys.stderr, assay, fname
+        if assay == 'CAGE': continue
         for (contig, strand, start, stop), data in iter_bed_peaks(
                 os.path.join(path, fname)):
             peaks[(contig, strand)].append((start, stop))
@@ -42,7 +48,7 @@ def load_sample_peaks(path=PEAKS_PATH):
                 os.path.join(path, fname)):
             peaks[(contig, strand)].append((start, stop, data, fname))
             counts[fname] += float(data[6])
-        if len(counts) > 15: break
+        #if len(counts) > 15: break
     return peaks, dict(counts)
 
 def group_peaks_in_contig(contig_peaks):
@@ -59,7 +65,8 @@ def group_peaks_in_contig(contig_peaks):
 
 def merge_peaks(peaks):
     merged_peaks = {}
-    for key, intervals in peaks.iteritems():
+    for key, contig_peaks in peaks.iteritems():
+        intervals = [x[:2] for x in contig_peaks]
         merged_peaks[key] = [(x[0], x[1], None, 'IDR')
                              for x in flatten(intervals)]
     return merged_peaks
@@ -96,7 +103,7 @@ def iter_merged_peaks(grpd_peaks, depths):
                 if peak[2] == 'IDR': continue
                 if pk_start > peak[0][0] or pk_stop < peak[0][1]:
                     continue
-                scale = 1e6/(depths[peak[-1]]*len(depths))
+                scale = 1e6/(depths[peak[-1]]*max(5, len(peaks)))
                 cov[peak[0][0]-pk_start:peak[0][1]-pk_start] += (
                     scale*extract_coverage(peak[1]) )
             
@@ -123,27 +130,46 @@ def clean_contig_name(contig):
     if contig.startswith('chrJH'): contig = contig[3:]
     return contig
 
+def get_assay_name(experiment):
+    cage_pat = 'assay_term_name": "CAGE"'
+    rampage_pat = 'assay_term_name": "RAMPAGE"'
+    url = "https://www.encodeproject.org/experiments/%s/?format=json" % experiment
+    data = urllib.urlopen(url).read()
+    cage_res = re.findall(cage_pat, data)
+    rampage_res = re.findall(rampage_pat, data)
+    assert len(cage_res) == 0 or len(rampage_res) == 0
+    if len(cage_res) > 0:
+        return 'CAGE'
+    if len(rampage_res) > 0:
+        return 'RAMPAGE'
+    assert False
+
 def main():
-    with open("idr_peaks.obj") as fp:
+    with open("idr_peaks.rampage.obj") as fp:
         idr_peaks = pickle.load(fp)
     #idr_peaks = merge_peaks(load_idr_peaks())
-    #with open("idr_peaks.obj", "w") as ofp:
+    #with open("idr_peaks.rampage.obj", "w") as ofp:
     #    pickle.dump(idr_peaks, ofp)
+    print >> sys.stderr, "Finished Loading IDR Peaks"
 
     with open("sample_peaks.obj") as fp:
         sample_peaks, depths = pickle.load(fp)
     #sample_peaks, depths = load_sample_peaks()
     #with open("sample_peaks.obj", "w") as ofp:
     #    pickle.dump((sample_peaks, depths), ofp)
+    print >> sys.stderr, "Finished Loading Sample Peaks"
 
-    for key in idr_peaks.keys():
-        if key[0] == 'chrphiX174': continue
+    for contig, strand in idr_peaks.keys():
+        print >> sys.stderr, contig, strand
+        if contig == 'chrphiX174': continue
+        if contig != clean_contig_name(contig): continue
         grpd_peaks = group_peaks_in_contig(
-            sorted(idr_peaks[key] + sample_peaks[key]))
+            sorted(idr_peaks[(contig, strand)] + sample_peaks[(contig, strand)])
+        )
         for start, stop, cov in iter_merged_peaks(grpd_peaks, depths):
             score = min(1000, int(cov.sum()*100))
             print "%s\t%i\t%i\tNone\t%i\t%s" % (
-                key[0], start, stop, score, key[1])
+                clean_contig_name(contig), start, stop, score, strand)
     
     return
 
